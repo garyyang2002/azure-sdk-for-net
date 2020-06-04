@@ -14,7 +14,9 @@ using Microsoft.Azure.Amqp.Encoding;
 
 namespace Azure.Messaging.ServiceBus.Amqp
 {
+#pragma warning disable CA1001 // Types that own disposable fields should be disposable. AmqpRuleManager does not own connection scope.
     internal class AmqpRuleManager : TransportRuleManager
+#pragma warning restore CA1001 // Types that own disposable fields should be disposable
     {
         /// <summary>
         /// The path of the Service Bus subscription to which the rule manager is bound.
@@ -26,6 +28,11 @@ namespace Azure.Messaging.ServiceBus.Amqp
         /// The policy to use for determining retry behavior for when an operation fails.
         /// </summary>
         private readonly ServiceBusRetryPolicy _retryPolicy;
+
+        /// <summary>
+        /// The identifier for the rule manager.
+        /// </summary>
+        private readonly string _identifier;
 
         /// <summary>
         /// The AMQP connection scope responsible for managing transport constructs for this instance.
@@ -67,6 +74,7 @@ namespace Azure.Messaging.ServiceBus.Amqp
         /// <param name="subscriptionPath">The path of the Service Bus subscription to which the rule manager is bound.</param>
         /// <param name="connectionScope">The AMQP connection context for operations.</param>
         /// <param name="retryPolicy">The retry policy to consider when an operation fails.</param>
+        /// <param name="identifier">The identifier for the rule manager.</param>
         ///
         /// <remarks>
         /// As an internal type, this class performs only basic sanity checks against its arguments.  It
@@ -79,7 +87,8 @@ namespace Azure.Messaging.ServiceBus.Amqp
         public AmqpRuleManager(
             string subscriptionPath,
             AmqpConnectionScope connectionScope,
-            ServiceBusRetryPolicy retryPolicy)
+            ServiceBusRetryPolicy retryPolicy,
+            string identifier)
         {
             Argument.AssertNotNullOrEmpty(subscriptionPath, nameof(subscriptionPath));
             Argument.AssertNotNull(connectionScope, nameof(connectionScope));
@@ -88,10 +97,12 @@ namespace Azure.Messaging.ServiceBus.Amqp
             _subscriptionPath = subscriptionPath;
             _connectionScope = connectionScope;
             _retryPolicy = retryPolicy;
+            _identifier = identifier;
 
             _managementLink = new FaultTolerantAmqpObject<RequestResponseAmqpLink>(
                 timeout => _connectionScope.OpenManagementLinkAsync(
                     _subscriptionPath,
+                    _identifier,
                     timeout,
                     CancellationToken.None),
                 link =>

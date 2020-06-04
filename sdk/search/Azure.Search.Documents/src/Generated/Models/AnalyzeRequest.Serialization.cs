@@ -5,10 +5,11 @@
 
 #nullable disable
 
+using System.Linq;
 using System.Text.Json;
 using Azure.Core;
 
-namespace Azure.Search.Documents.Models
+namespace Azure.Search.Documents.Indexes.Models
 {
     public partial class AnalyzeRequest : IUtf8JsonSerializable
     {
@@ -27,7 +28,7 @@ namespace Azure.Search.Documents.Models
                 writer.WritePropertyName("tokenizer");
                 writer.WriteStringValue(Tokenizer.Value.ToString());
             }
-            if (TokenFilters != null)
+            if (TokenFilters != null && TokenFilters.Any())
             {
                 writer.WritePropertyName("tokenFilters");
                 writer.WriteStartArray();
@@ -37,7 +38,7 @@ namespace Azure.Search.Documents.Models
                 }
                 writer.WriteEndArray();
             }
-            if (CharFilters != null)
+            if (CharFilters != null && CharFilters.Any())
             {
                 writer.WritePropertyName("charFilters");
                 writer.WriteStartArray();

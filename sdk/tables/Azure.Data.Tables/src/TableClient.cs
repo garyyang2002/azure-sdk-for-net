@@ -4,11 +4,12 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
-using System.Linq;
+using System.Linq.Expressions;
 using System.Threading;
 using System.Threading.Tasks;
 using Azure.Core;
 using Azure.Data.Tables.Models;
+using Azure.Data.Tables.Queryable;
 using Azure.Data.Tables.Sas;
 
 namespace Azure.Data.Tables
@@ -21,13 +22,17 @@ namespace Azure.Data.Tables
     {
         private readonly string _table;
         private readonly OdataMetadataFormat _format;
-        private readonly TableInternalClient _tableOperations;
+        private readonly TableRestClient _tableOperations;
+        private readonly string _version;
+        private readonly bool _isPremiumEndpoint;
 
-        internal TableClient(string table, TableInternalClient tableOperations)
+        internal TableClient(string table, TableRestClient tableOperations, string version, bool isPremiumEndpoint)
         {
             _tableOperations = tableOperations;
+            _version = version;
             _table = table;
             _format = OdataMetadataFormat.ApplicationJsonOdataFullmetadata;
+            _isPremiumEndpoint = isPremiumEndpoint;
         }
 
         /// <summary>
@@ -37,6 +42,7 @@ namespace Azure.Data.Tables
         protected TableClient()
         { }
 
+
         /// <summary>
         /// Gets a <see cref="TableSasBuilder"/> instance scoped to the current table.
         /// </summary>
@@ -45,7 +51,7 @@ namespace Azure.Data.Tables
         /// <returns>An instance of <see cref="TableSasBuilder"/>.</returns>
         public virtual TableSasBuilder GetSasBuilder(TableSasPermissions permissions, DateTimeOffset expiresOn)
         {
-            return new TableSasBuilder(_table, permissions, expiresOn) { Version = _tableOperations.version };
+            return new TableSasBuilder(_table, permissions, expiresOn) { Version = _version };
         }
 
         /// <summary>
@@ -56,7 +62,7 @@ namespace Azure.Data.Tables
         /// <returns>An instance of <see cref="TableSasBuilder"/>.</returns>
         public virtual TableSasBuilder GetSasBuilder(string rawPermissions, DateTimeOffset expiresOn)
         {
-            return new TableSasBuilder(_table, rawPermissions, expiresOn) { Version = _tableOperations.version };
+            return new TableSasBuilder(_table, rawPermissions, expiresOn) { Version = _version };
         }
 
         /// <summary>
@@ -358,7 +364,7 @@ namespace Azure.Data.Tables
                 throw new ArgumentException("The entity must contain a RowKey value", nameof(entity));
             }
 
-            return (await _tableOperations.RestClient.MergeEntityAsync(_table,
+            return (await _tableOperations.MergeEntityAsync(_table,
                                                      partitionKey as string,
                                                      rowKey as string,
                                                      tableEntityProperties: entity.ToOdataAnnotatedDictionary(),
@@ -390,7 +396,7 @@ namespace Azure.Data.Tables
                 throw new ArgumentException("The entity must contain a RowKey value", nameof(entity));
             }
 
-            return _tableOperations.RestClient.MergeEntity(_table,
+            return _tableOperations.MergeEntity(_table,
                                           partitionKey as string,
                                           rowKey as string,
                                           tableEntityProperties: entity.ToOdataAnnotatedDictionary(),
@@ -402,17 +408,17 @@ namespace Azure.Data.Tables
         /// <summary>
         /// Queries entities in the table.
         /// </summary>
-        /// <param name="select">Returns the desired properties of an entity from the set. </param>
         /// <param name="filter">Returns only tables or entities that satisfy the specified filter.</param>
         /// <param name="top">Returns only the top n tables or entities from the set.</param>
+        /// <param name="select">Returns the desired properties of an entity from the set. </param>
         /// <param name="cancellationToken">A <see cref="CancellationToken"/> controlling the request lifetime.</param>
         /// <returns></returns>
         [ForwardsClientCalls]
-        public virtual AsyncPageable<IDictionary<string, object>> QueryAsync(string select = null, string filter = null, int? top = null, CancellationToken cancellationToken = default)
+        public virtual AsyncPageable<IDictionary<string, object>> QueryAsync(string filter = null, int? top = null, string select = null, CancellationToken cancellationToken = default)
         {
             return PageableHelpers.CreateAsyncEnumerable(async _ =>
             {
-                var response = await _tableOperations.RestClient.QueryEntitiesAsync(
+                var response = await _tableOperations.QueryEntitiesAsync(
                     _table,
                     queryOptions: new QueryOptions() { Format = _format, Top = top, Filter = filter, Select = @select },
                     cancellationToken: cancellationToken).ConfigureAwait(false);
@@ -426,7 +432,7 @@ namespace Azure.Data.Tables
             {
                 var (NextPartitionKey, NextRowKey) = ParseContinuationToken(continuationToken);
 
-                var response = await _tableOperations.RestClient.QueryEntitiesAsync(
+                var response = await _tableOperations.QueryEntitiesAsync(
                     _table,
                     queryOptions: new QueryOptions() { Format = _format, Top = top, Filter = filter, Select = @select },
                     nextPartitionKey: NextPartitionKey,
@@ -444,17 +450,17 @@ namespace Azure.Data.Tables
         /// <summary>
         /// Queries entities in the table.
         /// </summary>
-        /// <param name="select">Returns the desired properties of an entity from the set. </param>
         /// <param name="filter">Returns only tables or entities that satisfy the specified filter.</param>
         /// <param name="top">Returns only the top n tables or entities from the set.</param>
+        /// <param name="select">Returns the desired properties of an entity from the set. </param>
         /// <param name="cancellationToken">A <see cref="CancellationToken"/> controlling the request lifetime.</param>
 
         [ForwardsClientCalls]
-        public virtual Pageable<IDictionary<string, object>> Query(string select = null, string filter = null, int? top = null, CancellationToken cancellationToken = default)
+        public virtual Pageable<IDictionary<string, object>> Query(string filter = null, int? top = null, string select = null, CancellationToken cancellationToken = default)
         {
             return PageableHelpers.CreateEnumerable(_ =>
             {
-                var response = _tableOperations.RestClient.QueryEntities(_table,
+                var response = _tableOperations.QueryEntities(_table,
                     queryOptions: new QueryOptions() { Format = _format, Top = top, Filter = filter, Select = @select },
                     cancellationToken: cancellationToken);
 
@@ -468,7 +474,7 @@ namespace Azure.Data.Tables
             {
                 var (NextPartitionKey, NextRowKey) = ParseContinuationToken(continuationToken);
 
-                var response = _tableOperations.RestClient.QueryEntities(
+                var response = _tableOperations.QueryEntities(
                     _table,
                     queryOptions: new QueryOptions() { Format = _format, Top = top, Filter = filter, Select = @select },
                     nextPartitionKey: NextPartitionKey,
@@ -486,17 +492,44 @@ namespace Azure.Data.Tables
         /// <summary>
         /// Queries entities in the table.
         /// </summary>
-        /// <param name="select">Returns the desired properties of an entity from the set. </param>
         /// <param name="filter">Returns only tables or entities that satisfy the specified filter.</param>
         /// <param name="top">Returns only the top n tables or entities from the set.</param>
+        /// <param name="select">Returns the desired properties of an entity from the set. </param>
+        /// <param name="cancellationToken">A <see cref="CancellationToken"/> controlling the request lifetime.</param>
+
+        [ForwardsClientCalls]
+        public virtual AsyncPageable<IDictionary<string, object>> QueryAsync(Expression<Func<IDictionary<string, object>, bool>> filter, int? top = null, string select = null, CancellationToken cancellationToken = default) =>
+            QueryAsync(Bind(filter), top, select, cancellationToken);
+
+        public virtual Pageable<IDictionary<string, object>> Query(Expression<Func<IDictionary<string, object>, bool>> filter, int? top = null, string select = null, CancellationToken cancellationToken = default) =>
+            Query(Bind(filter), top, select, cancellationToken);
+
+        /// <summary>
+        /// Queries entities in the table.
+        /// </summary>
+        /// <param name="filter">Returns only tables or entities that satisfy the specified filter.</param>
+        /// <param name="top">Returns only the top n tables or entities from the set.</param>
+        /// <param name="select">Returns the desired properties of an entity from the set. </param>
+        /// <param name="cancellationToken">A <see cref="CancellationToken"/> controlling the request lifetime.</param>
+
+        [ForwardsClientCalls]
+        public virtual AsyncPageable<T> QueryAsync<T>(Expression<Func<T, bool>> filter, int? top = null, string select = null, CancellationToken cancellationToken = default) where T : TableEntity, new() =>
+            QueryAsync<T>(Bind(filter), top, select, cancellationToken);
+
+        /// <summary>
+        /// Queries entities in the table.
+        /// </summary>
+        /// <param name="filter">Returns only tables or entities that satisfy the specified filter.</param>
+        /// <param name="top">Returns only the top n tables or entities from the set.</param>
+        /// <param name="select">Returns the desired properties of an entity from the set. </param>
         /// <param name="cancellationToken">A <see cref="CancellationToken"/> controlling the request lifetime.</param>
         /// <returns></returns>
         [ForwardsClientCalls]
-        public virtual AsyncPageable<T> QueryAsync<T>(string select = null, string filter = null, int? top = null, CancellationToken cancellationToken = default) where T : TableEntity, new()
+        public virtual AsyncPageable<T> QueryAsync<T>(string filter = null, int? top = null, string select = null, CancellationToken cancellationToken = default) where T : TableEntity, new()
         {
             return PageableHelpers.CreateAsyncEnumerable(async _ =>
             {
-                var response = await _tableOperations.RestClient.QueryEntitiesAsync(
+                var response = await _tableOperations.QueryEntitiesAsync(
                     _table,
                     queryOptions: new QueryOptions() { Format = _format, Top = top, Filter = filter, Select = @select },
                     cancellationToken: cancellationToken).ConfigureAwait(false);
@@ -508,7 +541,7 @@ namespace Azure.Data.Tables
             {
                 var (NextPartitionKey, NextRowKey) = ParseContinuationToken(continuationToken);
 
-                var response = await _tableOperations.RestClient.QueryEntitiesAsync(
+                var response = await _tableOperations.QueryEntitiesAsync(
                     _table,
                     queryOptions: new QueryOptions() { Format = _format, Top = top, Filter = filter, Select = @select },
                     nextPartitionKey: NextPartitionKey,
@@ -524,17 +557,29 @@ namespace Azure.Data.Tables
         /// <summary>
         /// Queries entities in the table.
         /// </summary>
-        /// <param name="select">Returns the desired properties of an entity from the set. </param>
         /// <param name="filter">Returns only tables or entities that satisfy the specified filter.</param>
         /// <param name="top">Returns only the top n tables or entities from the set.</param>
+        /// <param name="select">Returns the desired properties of an entity from the set. </param>
         /// <param name="cancellationToken">A <see cref="CancellationToken"/> controlling the request lifetime.</param>
 
         [ForwardsClientCalls]
-        public virtual Pageable<T> Query<T>(string select = null, string filter = null, int? top = null, CancellationToken cancellationToken = default) where T : TableEntity, new()
+        public virtual Pageable<T> Query<T>(Expression<Func<T, bool>> filter, int? top = null, string select = null, CancellationToken cancellationToken = default) where T : TableEntity, new() =>
+            Query<T>(Bind(filter), top, select, cancellationToken);
+
+        /// <summary>
+        /// Queries entities in the table.
+        /// </summary>
+        /// <param name="filter">Returns only tables or entities that satisfy the specified filter.</param>
+        /// <param name="top">Returns only the top n tables or entities from the set.</param>
+        /// <param name="select">Returns the desired properties of an entity from the set. </param>
+        /// <param name="cancellationToken">A <see cref="CancellationToken"/> controlling the request lifetime.</param>
+
+        [ForwardsClientCalls]
+        public virtual Pageable<T> Query<T>(string filter = null, int? top = null, string select = null, CancellationToken cancellationToken = default) where T : TableEntity, new()
         {
-            return PageableHelpers.CreateEnumerable(_ =>
+            return PageableHelpers.CreateEnumerable((int? _) =>
             {
-                var response = _tableOperations.RestClient.QueryEntities(_table,
+                var response = _tableOperations.QueryEntities(_table,
                     queryOptions: new QueryOptions() { Format = _format, Top = top, Filter = filter, Select = @select },
                     cancellationToken: cancellationToken);
 
@@ -546,7 +591,7 @@ namespace Azure.Data.Tables
             {
                 var (NextPartitionKey, NextRowKey) = ParseContinuationToken(continuationToken);
 
-                var response = _tableOperations.RestClient.QueryEntities(
+                var response = _tableOperations.QueryEntities(
                     _table,
                     queryOptions: new QueryOptions() { Format = _format, Top = top, Filter = filter, Select = @select },
                     nextPartitionKey: NextPartitionKey,
@@ -643,7 +688,40 @@ namespace Azure.Data.Tables
         public virtual Response SetAccessPolicy(IEnumerable<SignedIdentifier> tableAcl, int? timeout = null, string requestId = null, CancellationToken cancellationToken = default) =>
             _tableOperations.SetAccessPolicy(_table, timeout, requestId, tableAcl, cancellationToken);
 
-        private static string CreateContinuationTokenFromHeaders(TableInternalQueryEntitiesHeaders headers)
+        internal ExpressionParser GetExpressionParser()
+        {
+            if (_isPremiumEndpoint)
+            {
+                //TODO: Port TableExtensionExpressionParser
+                throw new NotImplementedException();
+            }
+            else
+            {
+                return new ExpressionParser();
+            }
+        }
+
+        internal string Bind(Expression expression)
+        {
+            Argument.AssertNotNull(expression, nameof(expression));
+
+            Dictionary<Expression, Expression> normalizerRewrites = new Dictionary<Expression, Expression>(ReferenceEqualityComparer<Expression>.Instance);
+
+            // Evaluate any local evaluatable expressions ( lambdas etc)
+            Expression partialEvaluatedExpression = Evaluator.PartialEval(expression);
+
+            // Normalize expression, replace String Comparisons etc.
+            Expression normalizedExpression = ExpressionNormalizer.Normalize(partialEvaluatedExpression, normalizerRewrites);
+
+            // Parse the Bound expression into sub components, i.e. take count, filter, select columns, request options, opcontext, etc.
+            ExpressionParser parser = GetExpressionParser();
+            parser.Translate(normalizedExpression);
+
+            // Return the FilterString.
+            return parser.FilterString == "true" ? null : parser.FilterString;
+        }
+
+        private static string CreateContinuationTokenFromHeaders(TableQueryEntitiesHeaders headers)
         {
             if (headers.XMsContinuationNextPartitionKey == null && headers.XMsContinuationNextRowKey == null)
             {
