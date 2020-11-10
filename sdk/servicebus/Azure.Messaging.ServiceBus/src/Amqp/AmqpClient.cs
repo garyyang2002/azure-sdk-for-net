@@ -99,7 +99,7 @@ namespace Azure.Messaging.ServiceBus.Amqp
                 ServiceEndpoint,
                 credential,
                 options.TransportType,
-                options.Proxy);
+                options.WebProxy);
 
         }
 
@@ -109,23 +109,20 @@ namespace Azure.Messaging.ServiceBus.Amqp
         /// </summary>
         ///
         /// <param name="entityPath">The entity path to send the message to.</param>
-        /// <param name="viaEntityPath">The entity path to route the message through. Useful when using transactions.</param>
         /// <param name="retryPolicy">The policy which governs retry behavior and try timeouts.</param>
         /// <param name="identifier">The identifier for the sender.</param>
         ///
         /// <returns>A <see cref="TransportSender"/> configured in the requested manner.</returns>
         public override TransportSender CreateSender(
             string entityPath,
-            string viaEntityPath,
             ServiceBusRetryPolicy retryPolicy,
             string identifier)
         {
-            Argument.AssertNotClosed(_closed, nameof(AmqpClient));
+            Argument.AssertNotDisposed(_closed, nameof(AmqpClient));
 
             return new AmqpSender
             (
                 entityPath,
-                viaEntityPath,
                 ConnectionScope,
                 retryPolicy,
                 identifier
@@ -156,7 +153,7 @@ namespace Azure.Messaging.ServiceBus.Amqp
             string sessionId,
             bool isSessionReceiver)
         {
-            Argument.AssertNotClosed(_closed, nameof(AmqpClient));
+            Argument.AssertNotDisposed(_closed, nameof(AmqpClient));
 
             return new AmqpReceiver
             (
@@ -186,7 +183,7 @@ namespace Azure.Messaging.ServiceBus.Amqp
             ServiceBusRetryPolicy retryPolicy,
             string identifier)
         {
-            Argument.AssertNotClosed(_closed, nameof(AmqpClient));
+            Argument.AssertNotDisposed(_closed, nameof(AmqpClient));
 
             return new AmqpRuleManager
             (

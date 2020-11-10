@@ -40,8 +40,7 @@ namespace Storage.Tests
                 {
                     Location = "eastus2euap",
                     Kind = Kind.StorageV2,
-                    Sku = new Sku { Name = SkuName.StandardLRS },
-                    LargeFileSharesState = LargeFileSharesState.Enabled
+                    Sku = new Sku { Name = SkuName.StandardLRS }
                 };
                 var account = storageMgmtClient.StorageAccounts.Create(rgName, accountName, parameters);
 
@@ -62,6 +61,9 @@ namespace Storage.Tests
 
                     table2 = storageMgmtClient.Table.Get(rgName, accountName, tableName2);
                     Assert.Equal(tableName2, table2.TableName);
+
+                    // Update Table: Update still not update any thing, will add update parameter when add things to update
+                    table = storageMgmtClient.Table.Update(rgName, accountName, tableName);
 
                     //list Table
                     IPage<Table> tables = storageMgmtClient.Table.List(rgName, accountName);
@@ -105,8 +107,7 @@ namespace Storage.Tests
                 {
                     Location = "eastus2euap",
                     Kind = Kind.StorageV2,
-                    Sku = new Sku { Name = SkuName.StandardLRS },
-                    LargeFileSharesState = LargeFileSharesState.Enabled
+                    Sku = new Sku { Name = SkuName.StandardLRS }
                 };
                 var account = storageMgmtClient.StorageAccounts.Create(rgName, accountName, parameters);
 

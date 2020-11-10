@@ -20,7 +20,7 @@ namespace Azure.Core.TestFramework
                 Type declaringType = invocation.Method.DeclaringType;
                 var ns = declaringType.Namespace;
                 var expectedName = declaringType.Name + "." + methodName.Substring(0, methodName.Length - 5);
-                using ClientDiagnosticListener diagnosticListener = new ClientDiagnosticListener(s => s.StartsWith("Azure."));
+                using ClientDiagnosticListener diagnosticListener = new ClientDiagnosticListener(s => s.StartsWith("Azure."), asyncLocal: true);
                 invocation.Proceed();
 
                 bool expectFailure = false;
@@ -79,7 +79,7 @@ namespace Azure.Core.TestFramework
 
                             if (!e.Activity.Tags.Any(tag => tag.Key == "az.namespace"))
                             {
-                                throw new InvalidOperationException($"All diagnostic scopes should have 'az.namespace' attribute, make sure the assembly containing **ClientOptions type is marked with AzureResourceProviderNamespaceAttribute");
+                                throw new InvalidOperationException($"All diagnostic scopes should have 'az.namespace' attribute, make sure the assembly containing **ClientOptions type is marked with the AzureResourceProviderNamespace attribute specifying the appropriate provider. This attribute should be included in AssemblyInfo, and can be included by pulling in AzureResourceProviderNamespaceAttribute.cs using the AzureCoreSharedSources alias.");
                             }
 
                             if (expectFailure && !e.IsFailed)

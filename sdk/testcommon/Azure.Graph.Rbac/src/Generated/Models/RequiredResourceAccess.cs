@@ -9,6 +9,7 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
+using Azure.Core;
 
 namespace Azure.Graph.Rbac.Models
 {
@@ -17,6 +18,7 @@ namespace Azure.Graph.Rbac.Models
     {
         /// <summary> Initializes a new instance of RequiredResourceAccess. </summary>
         /// <param name="resourceAccess"> The list of OAuth2.0 permission scopes and app roles that the application requires from the specified resource. </param>
+        /// <exception cref="ArgumentNullException"> <paramref name="resourceAccess"/> is null. </exception>
         public RequiredResourceAccess(IEnumerable<ResourceAccess> resourceAccess)
         {
             if (resourceAccess == null)
@@ -24,8 +26,8 @@ namespace Azure.Graph.Rbac.Models
                 throw new ArgumentNullException(nameof(resourceAccess));
             }
 
-            ResourceAccess = resourceAccess.ToArray();
-            AdditionalProperties = new Dictionary<string, object>();
+            ResourceAccess = resourceAccess.ToList();
+            AdditionalProperties = new ChangeTrackingDictionary<string, object>();
         }
 
         /// <summary> Initializes a new instance of RequiredResourceAccess. </summary>
@@ -36,11 +38,11 @@ namespace Azure.Graph.Rbac.Models
         {
             ResourceAccess = resourceAccess;
             ResourceAppId = resourceAppId;
-            AdditionalProperties = additionalProperties ?? new Dictionary<string, object>();
+            AdditionalProperties = additionalProperties;
         }
 
         /// <summary> The list of OAuth2.0 permission scopes and app roles that the application requires from the specified resource. </summary>
-        public IList<ResourceAccess> ResourceAccess { get; set; }
+        public IList<ResourceAccess> ResourceAccess { get; }
         /// <summary> The unique identifier for the resource that the application requires access to. This should be equal to the appId declared on the target resource application. </summary>
         public string ResourceAppId { get; set; }
         internal IDictionary<string, object> AdditionalProperties { get; }

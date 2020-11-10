@@ -18,9 +18,9 @@ using Azure.Core.Pipeline;
 namespace Azure.Identity
 {
     /// <summary>
-    /// Enables authentication to Azure Active Directory using Azure CLI to generated an access token.
+    /// Enables authentication to Azure Active Directory using Azure CLI to obtain an access token.
     /// </summary>
-    internal class AzureCliCredential : TokenCredential
+    public class AzureCliCredential : TokenCredential
     {
         private const string AzureCLINotInstalled = "Azure CLI not installed";
         private const string AzNotLogIn = "Please run 'az login' to set up account";
@@ -171,7 +171,7 @@ namespace Azure.Identity
             string accessToken = root.GetProperty("accessToken").GetString();
             DateTimeOffset expiresOn = root.TryGetProperty("expiresIn", out JsonElement expiresIn)
                 ? DateTimeOffset.UtcNow + TimeSpan.FromSeconds(expiresIn.GetInt64())
-                : DateTimeOffset.ParseExact(root.GetProperty("expiresOn").GetString(), "yyyy-MM-dd HH:mm:ss.ffffff", CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal);
+                : DateTimeOffset.ParseExact(root.GetProperty("expiresOn").GetString(), "yyyy-MM-dd HH:mm:ss.ffffff", CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeLocal);
 
             return new AccessToken(accessToken, expiresOn);
         }

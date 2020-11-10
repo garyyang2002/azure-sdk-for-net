@@ -25,7 +25,7 @@ namespace Azure.AI.FormRecognizer.Samples
 
             using (FileStream stream = new FileStream(invoiceFilePath, FileMode.Open))
             {
-                FormPageCollection formPages = await client.StartRecognizeContent(stream).WaitForCompletionAsync();
+                FormPageCollection formPages = await client.StartRecognizeContentAsync(stream).WaitForCompletionAsync();
                 foreach (FormPage page in formPages)
                 {
                     Console.WriteLine($"Form Page {page.PageNumber} has {page.Lines.Count} lines.");
@@ -34,6 +34,12 @@ namespace Azure.AI.FormRecognizer.Samples
                     {
                         FormLine line = page.Lines[i];
                         Console.WriteLine($"    Line {i} has {line.Words.Count} word{(line.Words.Count > 1 ? "s" : "")}, and text: '{line.Text}'.");
+
+                        Console.WriteLine("        Its bounding box is:");
+                        Console.WriteLine($"        Upper left => X: {line.BoundingBox[0].X}, Y= {line.BoundingBox[0].Y}");
+                        Console.WriteLine($"        Upper right => X: {line.BoundingBox[1].X}, Y= {line.BoundingBox[1].Y}");
+                        Console.WriteLine($"        Lower right => X: {line.BoundingBox[2].X}, Y= {line.BoundingBox[2].Y}");
+                        Console.WriteLine($"        Lower left => X: {line.BoundingBox[3].X}, Y= {line.BoundingBox[3].Y}");
                     }
 
                     for (int i = 0; i < page.Tables.Count; i++)
@@ -44,6 +50,17 @@ namespace Azure.AI.FormRecognizer.Samples
                         {
                             Console.WriteLine($"    Cell ({cell.RowIndex}, {cell.ColumnIndex}) contains text: '{cell.Text}'.");
                         }
+                    }
+
+                    for (int i = 0; i < page.SelectionMarks.Count; i++)
+                    {
+                        FormSelectionMark selectionMark = page.SelectionMarks[i];
+                        Console.WriteLine($"Selection Mark {i} is {selectionMark.State}.");
+                        Console.WriteLine("        Its bounding box is:");
+                        Console.WriteLine($"        Upper left => X: {selectionMark.BoundingBox[0].X}, Y= {selectionMark.BoundingBox[0].Y}");
+                        Console.WriteLine($"        Upper right => X: {selectionMark.BoundingBox[1].X}, Y= {selectionMark.BoundingBox[1].Y}");
+                        Console.WriteLine($"        Lower right => X: {selectionMark.BoundingBox[2].X}, Y= {selectionMark.BoundingBox[2].Y}");
+                        Console.WriteLine($"        Lower left => X: {selectionMark.BoundingBox[3].X}, Y= {selectionMark.BoundingBox[3].Y}");
                     }
                 }
             }

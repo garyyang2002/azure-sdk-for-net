@@ -134,6 +134,7 @@ namespace Azure.Messaging.ServiceBus.Amqp
             _receiveMode = receiveMode;
             _identifier = identifier;
             _requestResponseLockedMessages = new ConcurrentExpiringSet<Guid>();
+            SessionId = sessionId;
 
             _receiveLink = new FaultTolerantAmqpObject<ReceivingAmqpLink>(
                 timeout =>
@@ -141,24 +142,30 @@ namespace Azure.Messaging.ServiceBus.Amqp
                         timeout: timeout,
                         prefetchCount: prefetchCount,
                         receiveMode: receiveMode,
-                        sessionId: sessionId,
                         isSessionReceiver: isSessionReceiver),
                 link => CloseLink(link));
 
             _managementLink = new FaultTolerantAmqpObject<RequestResponseAmqpLink>(
-                timeout => _connectionScope.OpenManagementLinkAsync(
-                    _entityPath,
-                    _identifier,
-                    timeout,
-                    CancellationToken.None),
+                timeout => OpenManagementLinkAsync(timeout),
                 link => CloseLink(link));
+        }
+
+        private async Task<RequestResponseAmqpLink> OpenManagementLinkAsync(
+            TimeSpan timeout)
+        {
+            RequestResponseAmqpLink link = await _connectionScope.OpenManagementLinkAsync(
+                _entityPath,
+                _identifier,
+                timeout,
+                CancellationToken.None).ConfigureAwait(false);
+            link.Closed += OnManagementLinkClosed;
+            return link;
         }
 
         private async Task<ReceivingAmqpLink> OpenReceiverLinkAsync(
             TimeSpan timeout,
             uint prefetchCount,
             ReceiveMode receiveMode,
-            string sessionId,
             bool isSessionReceiver)
         {
             ServiceBusEventSource.Log.CreateReceiveLinkStart(_identifier);
@@ -170,10 +177,34 @@ namespace Azure.Messaging.ServiceBus.Amqp
                     timeout: timeout,
                     prefetchCount: prefetchCount,
                     receiveMode: receiveMode,
-                    sessionId: sessionId,
+                    sessionId: SessionId,
                     isSessionReceiver: isSessionReceiver,
                     cancellationToken: CancellationToken.None).ConfigureAwait(false);
-                ServiceBusEventSource.Log.CreateReceiveLinkComplete(_identifier);
+                if (isSessionReceiver)
+                {
+                    SessionLockedUntil = link.Settings.Properties.TryGetValue<long>(
+                        AmqpClientConstants.LockedUntilUtc, out var lockedUntilUtcTicks) ?
+                        new DateTime(lockedUntilUtcTicks, DateTimeKind.Utc)
+                        : DateTime.MinValue;
+
+                    var source = (Source)link.Settings.Source;
+                    if (!source.FilterSet.TryGetValue<string>(AmqpClientConstants.SessionFilterName, out var tempSessionId))
+                    {
+                        link.Session.SafeClose();
+                        throw new ServiceBusException(true, Resources.SessionFilterMissing);
+                    }
+
+                    if (string.IsNullOrWhiteSpace(tempSessionId))
+                    {
+                        link.Session.SafeClose();
+                        throw new ServiceBusException(true, Resources.AmqpFieldSessionId);
+                    }
+                    // This will only have changed if sessionId was left blank when constructing the session
+                    // receiver.
+                    SessionId = tempSessionId;
+                }
+                ServiceBusEventSource.Log.CreateReceiveLinkComplete(_identifier, SessionId);
+                link.Closed += OnReceiverLinkClosed;
                 return link;
             }
             catch (Exception ex)
@@ -196,7 +227,7 @@ namespace Azure.Messaging.ServiceBus.Amqp
         }
 
         /// <summary>
-        /// Receives a batch of <see cref="ServiceBusReceivedMessage" /> from the entity using <see cref="ReceiveMode"/> mode.
+        /// Receives a list of <see cref="ServiceBusReceivedMessage" /> from the entity using <see cref="ReceiveMode"/> mode.
         /// </summary>
         ///
         /// <param name="maxMessages">The maximum number of messages that will be received.</param>
@@ -204,15 +235,15 @@ namespace Azure.Messaging.ServiceBus.Amqp
         /// <param name="cancellationToken">An optional <see cref="CancellationToken"/> instance to signal the request to cancel the operation.</param>
         ///
         /// <returns>List of messages received. Returns an empty list if no message is found.</returns>
-        public override async Task<IList<ServiceBusReceivedMessage>> ReceiveBatchAsync(
+        public override async Task<IReadOnlyList<ServiceBusReceivedMessage>> ReceiveMessagesAsync(
             int maxMessages,
             TimeSpan? maxWaitTime,
             CancellationToken cancellationToken)
         {
-            IList<ServiceBusReceivedMessage> messages = null;
+            IReadOnlyList<ServiceBusReceivedMessage> messages = null;
             await _retryPolicy.RunOperation(async (timeout) =>
             {
-                messages = await ReceiveBatchAsyncInternal(
+                messages = await ReceiveMessagesAsyncInternal(
                     maxMessages,
                     maxWaitTime,
                     timeout,
@@ -225,18 +256,18 @@ namespace Azure.Messaging.ServiceBus.Amqp
         }
 
         /// <summary>
-        /// Receives a batch of <see cref="ServiceBusMessage" /> from the Service Bus entity.
+        /// Receives a list of <see cref="ServiceBusMessage" /> from the Service Bus entity.
         /// </summary>
         ///
-        /// <param name="maxMessages">The maximum number of messages to receive in this batch.</param>
+        /// <param name="maxMessages">The maximum number of messages to receive.</param>
         /// <param name="maxWaitTime">An optional <see cref="TimeSpan"/> specifying the maximum time to wait for the first message before returning an empty list if no messages have been received.
         /// If not specified, the <see cref="ServiceBusRetryOptions.TryTimeout"/> will be used.</param>
         /// <param name="timeout">The per-try timeout specified in the RetryOptions.</param>
         /// <param name="cancellationToken">An optional <see cref="CancellationToken"/> instance to signal the request to cancel the operation.</param>
         ///
-        /// <returns>The batch of <see cref="ServiceBusMessage" /> from the Service Bus entity this receiver is associated with. If no messages are present, an empty list is returned.</returns>
+        /// <returns>The list of <see cref="ServiceBusMessage" /> from the Service Bus entity this receiver is associated with. If no messages are present, an empty list is returned.</returns>
         ///
-        private async Task<IList<ServiceBusReceivedMessage>> ReceiveBatchAsyncInternal(
+        private async Task<IReadOnlyList<ServiceBusReceivedMessage>> ReceiveMessagesAsyncInternal(
             int maxMessages,
             TimeSpan? maxWaitTime,
             TimeSpan timeout,
@@ -245,14 +276,15 @@ namespace Azure.Messaging.ServiceBus.Amqp
             var link = default(ReceivingAmqpLink);
             var amqpMessages = default(IEnumerable<AmqpMessage>);
             var receivedMessages = new List<ServiceBusReceivedMessage>();
-            if (_isSessionReceiver)
-            {
-                ThrowIfSessionLockLost();
-            }
+
+            ThrowIfSessionLockLost();
 
             try
             {
-                link = await _receiveLink.GetOrCreateAsync(UseMinimum(_connectionScope.SessionTimeout, timeout)).ConfigureAwait(false);
+                if (!_receiveLink.TryGetOpenedObject(out link))
+                {
+                    link = await _receiveLink.GetOrCreateAsync(UseMinimum(_connectionScope.SessionTimeout, timeout)).ConfigureAwait(false);
+                }
                 cancellationToken.ThrowIfCancellationRequested<TaskCanceledException>();
 
                 var messagesReceived = await Task.Factory.FromAsync
@@ -292,7 +324,7 @@ namespace Azure.Messaging.ServiceBus.Amqp
                     exception,
                     link?.GetTrackingId(),
                     null,
-                    HasLinkCommunicationError(link)))
+                    !cancellationToken.IsCancellationRequested && HasLinkCommunicationError(link)))
                 .Throw();
 
                 throw; // will never be reached
@@ -359,11 +391,7 @@ namespace Azure.Messaging.ServiceBus.Amqp
             Outcome outcome,
             TimeSpan timeout)
         {
-            if (_isSessionReceiver)
-            {
-                ThrowIfSessionLockLost();
-            }
-
+            ThrowIfSessionLockLost();
             List<ArraySegment<byte>> deliveryTags = ConvertLockTokensToDeliveryTags(lockTokens);
 
             ReceivingAmqpLink receiveLink = null;
@@ -433,11 +461,11 @@ namespace Azure.Messaging.ServiceBus.Amqp
             {
                 throw new ServiceBusException(
                     Resources.SessionLockExpiredOnMessageSession,
-                    ServiceBusException.FailureReason.SessionLockLost);
+                    ServiceBusFailureReason.SessionLockLost);
             }
             throw new ServiceBusException(
                 Resources.MessageLockLost,
-                ServiceBusException.FailureReason.MessageLockLost);
+                ServiceBusFailureReason.MessageLockLost);
         }
 
         /// <summary> Indicates that the receiver wants to defer the processing for the message.</summary>
@@ -449,8 +477,9 @@ namespace Azure.Messaging.ServiceBus.Amqp
         /// <remarks>
         /// A lock token can be found in <see cref="ServiceBusReceivedMessage.LockToken"/>,
         /// only when <see cref="ReceiveMode"/> is set to <see cref="ReceiveMode.PeekLock"/>.
-        /// In order to receive this message again in the future, you will need to save the <see cref="ServiceBusReceivedMessage.SequenceNumber"/>
-        /// and receive it using ReceiveDeferredMessageBatchAsync(IEnumerable, CancellationToken).
+        /// In order to receive this message again in the future, you will need to save
+        /// the <see cref="ServiceBusReceivedMessage.SequenceNumber"/>
+        /// and receive it using <see cref="ReceiveDeferredMessagesAsync"/>.
         /// Deferring messages does not impact message's expiration, meaning that deferred messages can still expire.
         /// This operation can only be performed on messages that were received by this receiver.
         /// </remarks>
@@ -547,17 +576,17 @@ namespace Azure.Messaging.ServiceBus.Amqp
         }
 
         /// <summary>
-        /// Moves a message to the deadletter sub-queue.
+        /// Moves a message to the dead-letter subqueue.
         /// </summary>
         ///
-        /// <param name="lockToken">The lock token of the <see cref="ServiceBusReceivedMessage"/> to deadletter.</param>
-        /// <param name="deadLetterReason">The reason for deadlettering the message.</param>
-        /// <param name="deadLetterErrorDescription">The error description for deadlettering the message.</param>
-        /// <param name="propertiesToModify">The properties of the message to modify while moving to sub-queue.</param>
+        /// <param name="lockToken">The lock token of the <see cref="ServiceBusReceivedMessage"/> to dead-letter.</param>
+        /// <param name="deadLetterReason">The reason for dead-lettering the message.</param>
+        /// <param name="deadLetterErrorDescription">The error description for dead-lettering the message.</param>
+        /// <param name="propertiesToModify">The properties of the message to modify while moving to subqueue.</param>
         /// <param name="cancellationToken">An optional <see cref="CancellationToken"/> instance to signal the request to cancel the operation.</param>
         ///
         /// <remarks>
-        /// In order to receive a message from the deadletter queue, you will need a new
+        /// In order to receive a message from the dead-letter queue, you will need a new
         /// <see cref="ServiceBusReceiver"/> with the corresponding path.
         /// You can use EntityNameHelper.FormatDeadLetterPath(string)"/> to help with this.
         /// This operation can only be performed on messages that were received by this receiver
@@ -582,14 +611,14 @@ namespace Azure.Messaging.ServiceBus.Amqp
                 cancellationToken).ConfigureAwait(false);
 
         /// <summary>
-        /// Moves a message to the deadletter sub-queue.
+        /// Moves a message to the dead-letter subqueue.
         /// </summary>
         ///
-        /// <param name="lockToken">The lock token of the corresponding message to deadletter.</param>
+        /// <param name="lockToken">The lock token of the corresponding message to dead-letter.</param>
         /// <param name="timeout"></param>
-        /// <param name="propertiesToModify">The properties of the message to modify while moving to sub-queue.</param>
-        /// <param name="deadLetterReason">The reason for deadlettering the message.</param>
-        /// <param name="deadLetterErrorDescription">The error description for deadlettering the message.</param>
+        /// <param name="propertiesToModify">The properties of the message to modify while moving to subqueue.</param>
+        /// <param name="deadLetterReason">The reason for dead-lettering the message.</param>
+        /// <param name="deadLetterErrorDescription">The error description for dead-lettering the message.</param>
         internal virtual Task DeadLetterInternalAsync(
             string lockToken,
             TimeSpan timeout,
@@ -631,12 +660,12 @@ namespace Azure.Messaging.ServiceBus.Amqp
                 rejected = new Rejected { Error = new Error { Condition = AmqpClientConstants.DeadLetterName, Info = new Fields() } };
                 if (deadLetterReason != null)
                 {
-                    rejected.Error.Info.Add(ServiceBusReceivedMessage.DeadLetterReasonHeader, deadLetterReason);
+                    rejected.Error.Info.Add(AmqpMessageConstants.DeadLetterReasonHeader, deadLetterReason);
                 }
 
                 if (deadLetterErrorDescription != null)
                 {
-                    rejected.Error.Info.Add(ServiceBusReceivedMessage.DeadLetterErrorDescriptionHeader, deadLetterErrorDescription);
+                    rejected.Error.Info.Add(AmqpMessageConstants.DeadLetterErrorDescriptionHeader, deadLetterErrorDescription);
                 }
 
                 if (propertiesToModify != null)
@@ -777,7 +806,7 @@ namespace Azure.Messaging.ServiceBus.Amqp
         }
 
         /// <summary>
-        /// Fetches the next batch of active messages without changing the state of the receiver or the message source.
+        /// Fetches a list of active messages without changing the state of the receiver or the message source.
         /// </summary>
         ///
         /// <param name="sequenceNumber">The sequence number from where to read the message.</param>
@@ -785,24 +814,25 @@ namespace Azure.Messaging.ServiceBus.Amqp
         /// <param name="cancellationToken">An optional <see cref="CancellationToken"/> instance to signal the request to cancel the operation.</param>
         ///
         /// <remarks>
-        /// The first call to PeekBatchBySequenceAsync(long, int, CancellationToken) fetches the first active message for this receiver. Each subsequent call
-        /// fetches the subsequent message in the entity.
-        /// Unlike a received message, peeked message will not have lock token associated with it, and hence it cannot be Completed/Abandoned/Deferred/Deadlettered/Renewed.
-        /// Also, unlike <see cref="ReceiveBatchAsync(int, TimeSpan?, CancellationToken)"/>, this method will fetch even Deferred messages (but not Deadlettered message)
+        /// The first call to <see cref="PeekMessagesAsync"/>(long, int, CancellationToken) fetches the first active message for this receiver.
+        /// Each subsequent call fetches the subsequent message in the entity.
+        /// Unlike a received message, peeked message will not have lock token associated with it,
+        /// and hence it cannot be Completed/Abandoned/Deferred/Deadlettered/Renewed.
+        /// Also, unlike <see cref="ReceiveMessagesAsync(int, TimeSpan?, CancellationToken)"/>, this method will fetch even Deferred messages (but not Deadlettered message)
         /// </remarks>
         /// <returns></returns>
-        public override async Task<IList<ServiceBusReceivedMessage>> PeekBatchAtAsync(
+        public override async Task<IReadOnlyList<ServiceBusReceivedMessage>> PeekMessagesAsync(
             long? sequenceNumber,
             int messageCount = 1,
             CancellationToken cancellationToken = default)
         {
 
             long seqNumber = sequenceNumber ?? LastPeekedSequenceNumber + 1;
-            IList<ServiceBusReceivedMessage> messages = null;
+            IReadOnlyList<ServiceBusReceivedMessage> messages = null;
 
             await _retryPolicy.RunOperation(
                 async (timeout) =>
-                messages = await PeekBatchAtInternalAsync(
+                messages = await PeekMessagesInternalAsync(
                     seqNumber,
                     messageCount,
                     timeout,
@@ -822,7 +852,7 @@ namespace Azure.Messaging.ServiceBus.Amqp
         /// <param name="timeout"></param>
         /// <param name="cancellationToken"></param>
         /// <returns></returns>
-        private async Task<IList<ServiceBusReceivedMessage>> PeekBatchAtInternalAsync(
+        private async Task<IReadOnlyList<ServiceBusReceivedMessage>> PeekMessagesInternalAsync(
             long sequenceNumber,
             int messageCount,
             TimeSpan timeout,
@@ -890,14 +920,6 @@ namespace Azure.Messaging.ServiceBus.Amqp
             }
 
             throw amqpResponseMessage.ToMessagingContractException();
-        }
-
-        private void ThrowIfSessionLockLost()
-        {
-            if (LinkException != null)
-            {
-                throw LinkException;
-            }
         }
 
         /// <summary>
@@ -969,10 +991,7 @@ namespace Azure.Messaging.ServiceBus.Amqp
 
         private async Task<AmqpResponseMessage> ExecuteRequest(TimeSpan timeout, AmqpRequestMessage amqpRequestMessage)
         {
-            if (_isSessionReceiver)
-            {
-                ThrowIfSessionLockLost();
-            }
+            ThrowIfSessionLockLost();
             AmqpResponseMessage amqpResponseMessage = await ManagementUtilities.ExecuteRequestResponseAsync(
                 _connectionScope,
                 _managementLink,
@@ -1003,10 +1022,11 @@ namespace Azure.Messaging.ServiceBus.Amqp
             // Create an AmqpRequest Message to renew  lock
             var amqpRequestMessage = AmqpRequestMessage.CreateRequest(ManagementConstants.Operations.RenewSessionLockOperation, timeout, null);
 
-            if (_receiveLink.TryGetOpenedObject(out var receiveLink))
+            if (!_receiveLink.TryGetOpenedObject(out ReceivingAmqpLink receiveLink))
             {
-                amqpRequestMessage.AmqpMessage.ApplicationProperties.Map[ManagementConstants.Request.AssociatedLinkName] = receiveLink.Name;
+                receiveLink = await _receiveLink.GetOrCreateAsync(UseMinimum(_connectionScope.SessionTimeout, timeout)).ConfigureAwait(false);
             }
+            amqpRequestMessage.AmqpMessage.ApplicationProperties.Map[ManagementConstants.Request.AssociatedLinkName] = receiveLink.Name;
 
             amqpRequestMessage.Map[ManagementConstants.Properties.SessionId] = SessionId;
 
@@ -1032,10 +1052,10 @@ namespace Azure.Messaging.ServiceBus.Amqp
         ///
         /// <param name="cancellationToken">An optional <see cref="CancellationToken"/> instance to signal the request to cancel the operation.</param>
         ///
-        /// <returns>The session state as byte array.</returns>
-        public override async Task<byte[]> GetStateAsync(CancellationToken cancellationToken = default)
+        /// <returns>The session state as <see cref="BinaryData"/>.</returns>
+        public override async Task<BinaryData> GetStateAsync(CancellationToken cancellationToken = default)
         {
-            byte[] sessionState = null;
+            BinaryData sessionState = default;
             await _retryPolicy.RunOperation(
                 async (timeout) =>
                 {
@@ -1046,7 +1066,7 @@ namespace Azure.Messaging.ServiceBus.Amqp
             return sessionState;
         }
 
-        internal async Task<byte[]> GetStateInternal(TimeSpan timeout)
+        internal async Task<BinaryData> GetStateInternal(TimeSpan timeout)
         {
             var amqpRequestMessage = AmqpRequestMessage.CreateRequest(ManagementConstants.Operations.GetSessionStateOperation, timeout, null);
 
@@ -1059,12 +1079,12 @@ namespace Azure.Messaging.ServiceBus.Amqp
 
             var amqpResponseMessage = await ExecuteRequest(timeout, amqpRequestMessage).ConfigureAwait(false);
 
-            byte[] sessionState = null;
+            BinaryData sessionState = default;
             if (amqpResponseMessage.StatusCode == AmqpResponseStatusCode.OK)
             {
                 if (amqpResponseMessage.Map[ManagementConstants.Properties.SessionState] != null)
                 {
-                    sessionState = amqpResponseMessage.GetValue<ArraySegment<byte>>(ManagementConstants.Properties.SessionState).Array;
+                    sessionState = new BinaryData(amqpResponseMessage.GetValue<ArraySegment<byte>>(ManagementConstants.Properties.SessionState).Array ?? Array.Empty<byte>());
                 }
             }
             else
@@ -1076,17 +1096,17 @@ namespace Azure.Messaging.ServiceBus.Amqp
         }
 
         /// <summary>
-        /// Set a custom state on the session which can be later retrieved using <see cref="GetStateAsync"/>
+        /// Set a custom state on the session which can be later retrieved using <see cref="GetStateAsync"/>.
         /// </summary>
         ///
-        /// <param name="sessionState">A byte array of session state</param>
+        /// <param name="sessionState">A <see cref="BinaryData"/> of session state</param>
         /// <param name="cancellationToken">An optional <see cref="CancellationToken"/> instance to signal the request to cancel the operation.</param>
         ///
         /// <remarks>This state is stored on Service Bus forever unless you set an empty state on it.</remarks>
         ///
         /// <returns>A task to be resolved on when the operation has completed.</returns>
         public override async Task SetStateAsync(
-            byte[] sessionState,
+            BinaryData sessionState,
             CancellationToken cancellationToken)
         {
             await _retryPolicy.RunOperation(
@@ -1101,7 +1121,7 @@ namespace Azure.Messaging.ServiceBus.Amqp
         }
 
         internal async Task SetStateInternal(
-            byte[] sessionState,
+            BinaryData sessionState,
             TimeSpan timeout)
         {
             var amqpRequestMessage = AmqpRequestMessage.CreateRequest(ManagementConstants.Operations.SetSessionStateOperation, timeout, null);
@@ -1115,7 +1135,7 @@ namespace Azure.Messaging.ServiceBus.Amqp
 
             if (sessionState != null)
             {
-                var value = new ArraySegment<byte>(sessionState);
+                var value = new ArraySegment<byte>(sessionState.ToArray());
                 amqpRequestMessage.Map[ManagementConstants.Properties.SessionState] = value;
             }
             else
@@ -1138,11 +1158,11 @@ namespace Azure.Messaging.ServiceBus.Amqp
         /// <returns>Messages identified by sequence number are returned. Returns null if no messages are found.
         /// Throws if the messages have not been deferred.</returns>
         /// <seealso cref="DeferAsync"/>
-        public override async Task<IList<ServiceBusReceivedMessage>> ReceiveDeferredMessageBatchAsync(
+        public override async Task<IReadOnlyList<ServiceBusReceivedMessage>> ReceiveDeferredMessagesAsync(
             IList<long> sequenceNumbers,
             CancellationToken cancellationToken = default)
         {
-            IList<ServiceBusReceivedMessage> messages = null;
+            IReadOnlyList<ServiceBusReceivedMessage> messages = null;
             await _retryPolicy.RunOperation(
                 async (timeout) => messages = await ReceiveDeferredMessagesAsyncInternal(
                     sequenceNumbers.ToArray(),
@@ -1152,7 +1172,7 @@ namespace Azure.Messaging.ServiceBus.Amqp
             return messages;
         }
 
-        internal virtual async Task<IList<ServiceBusReceivedMessage>> ReceiveDeferredMessagesAsyncInternal(
+        internal virtual async Task<IReadOnlyList<ServiceBusReceivedMessage>> ReceiveDeferredMessagesAsyncInternal(
             long[] sequenceNumbers,
             TimeSpan timeout)
         {
@@ -1240,26 +1260,32 @@ namespace Azure.Messaging.ServiceBus.Amqp
 
         }
 
-        private void OnSessionReceiverLinkClosed(object receiver, EventArgs e)
+        private void OnReceiverLinkClosed(object receiver, EventArgs e)
         {
             var receivingAmqpLink = (ReceivingAmqpLink)receiver;
-            if (receivingAmqpLink != null)
+            if (_isSessionReceiver && receivingAmqpLink != null)
             {
                 Exception exception = receivingAmqpLink.GetInnerException();
-                if (((exception is ServiceBusException sbException) && sbException.Reason != ServiceBusException.FailureReason.SessionLockLost) || !(exception is ServiceBusException))
+                if (((exception is ServiceBusException sbException) && sbException.Reason != ServiceBusFailureReason.SessionLockLost) ||
+                    !(exception is ServiceBusException))
                 {
                     exception = new ServiceBusException(
-                        Resources.SessionLockExpiredOnMessageSession, ServiceBusException.FailureReason.SessionLockLost,
+                        Resources.SessionLockExpiredOnMessageSession,
+                        ServiceBusFailureReason.SessionLockLost,
                         innerException: exception);
                 }
-
                 LinkException = exception;
-                ServiceBusEventSource.Log.SessionReceiverLinkClosed(
-                    _identifier,
-                    SessionId,
-                    LinkException.ToString());
             }
+            ServiceBusEventSource.Log.ReceiveLinkClosed(
+                _identifier,
+                SessionId,
+                receiver);
         }
+
+        private void OnManagementLinkClosed(object managementLink, EventArgs e) =>
+        ServiceBusEventSource.Log.ManagementLinkClosed(
+            _identifier,
+            managementLink);
 
         /// <summary>
         /// Uses the minimum value of the two specified <see cref="TimeSpan" /> instances.
@@ -1289,31 +1315,17 @@ namespace Azure.Messaging.ServiceBus.Amqp
                link = await _receiveLink.GetOrCreateAsync(timeout).ConfigureAwait(false),
                _connectionScope,
                cancellationToken).ConfigureAwait(false);
-
-            if (_isSessionReceiver)
-            {
-                var source = (Source)link.Settings.Source;
-                if (!source.FilterSet.TryGetValue<string>(AmqpClientConstants.SessionFilterName, out var tempSessionId))
-                {
-                    link.Session.SafeClose();
-                    throw new ServiceBusException(true, Resources.SessionFilterMissing);
-                }
-
-                if (string.IsNullOrWhiteSpace(tempSessionId))
-                {
-                    link.Session.SafeClose();
-                    throw new ServiceBusException(true, Resources.AmqpFieldSessionId);
-                }
-                SessionId = tempSessionId;
-                SessionLockedUntil = link.Settings.Properties.TryGetValue<long>(AmqpClientConstants.LockedUntilUtc, out var lockedUntilUtcTicks)
-                ? new DateTime(lockedUntilUtcTicks, DateTimeKind.Utc)
-                : DateTime.MinValue;
-                link.Closed += OnSessionReceiverLinkClosed;
-
-            }
         }
 
         private bool HasLinkCommunicationError(ReceivingAmqpLink link) =>
             !_closed && (link?.IsClosing() ?? false);
+
+        private void ThrowIfSessionLockLost()
+        {
+            if (_isSessionReceiver && LinkException != null)
+            {
+                throw LinkException;
+            }
+        }
     }
 }

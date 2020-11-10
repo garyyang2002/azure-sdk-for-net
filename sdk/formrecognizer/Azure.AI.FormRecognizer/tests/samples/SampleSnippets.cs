@@ -69,7 +69,7 @@ namespace Azure.AI.FormRecognizer.Samples
             #region Snippet:FormRecognizerBadRequest
             try
             {
-                RecognizedReceiptCollection receipts = await client.StartRecognizeReceiptsFromUri(new Uri("http://invalid.uri")).WaitForCompletionAsync();
+                RecognizedFormCollection receipts = await client.StartRecognizeReceiptsFromUri(new Uri("http://invalid.uri")).WaitForCompletionAsync();
             }
             catch (RequestFailedException e)
             {
@@ -114,7 +114,29 @@ namespace Azure.AI.FormRecognizer.Samples
             #region Snippet:FormRecognizerRecognizeReceiptFromFile
             using (FileStream stream = new FileStream(receiptPath, FileMode.Open))
             {
-                RecognizedReceiptCollection receipts = await client.StartRecognizeReceipts(stream).WaitForCompletionAsync();
+                RecognizedFormCollection receipts = await client.StartRecognizeReceipts(stream).WaitForCompletionAsync();
+                /*
+                 *
+                 */
+            }
+            #endregion
+        }
+
+        [Test]
+        public async Task RecognizeBusinessCardsFromFile()
+        {
+            string endpoint = TestEnvironment.Endpoint;
+            string apiKey = TestEnvironment.ApiKey;
+
+            var credential = new AzureKeyCredential(apiKey);
+            var client = new FormRecognizerClient(new Uri(endpoint), credential);
+
+            string businessCardsPath = FormRecognizerTestEnvironment.CreatePath("businessCard.jpg");
+
+            #region Snippet:FormRecognizerRecognizeBusinessCardsFromFile
+            using (FileStream stream = new FileStream(businessCardsPath, FileMode.Open))
+            {
+                RecognizedFormCollection businessCards = await client.StartRecognizeBusinessCardsAsync(stream).WaitForCompletionAsync();
                 /*
                  *
                  */

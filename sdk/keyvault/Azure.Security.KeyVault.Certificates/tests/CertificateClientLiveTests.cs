@@ -27,7 +27,8 @@ namespace Azure.Security.KeyVault.Certificates.Tests
 {
     public partial class CertificateClientLiveTests : CertificatesTestBase
     {
-        public CertificateClientLiveTests(bool isAsync, CertificateClientOptions.ServiceVersion serviceVersion) : base(isAsync, serviceVersion)
+        public CertificateClientLiveTests(bool isAsync, CertificateClientOptions.ServiceVersion serviceVersion)
+            : base(isAsync, serviceVersion, null /* RecordedTestMode.Record /* to re-record */)
         {
             // TODO: https://github.com/Azure/azure-sdk-for-net/issues/11634
             Matcher = new RecordMatcher(compareBodies: false);
@@ -559,7 +560,19 @@ namespace Azure.Security.KeyVault.Certificates.Tests
 
             string providerName = "ssladmin";
 
-            CertificateIssuer issuer = new CertificateIssuer(issuerName, providerName);
+            CertificateIssuer issuer = new CertificateIssuer(issuerName, providerName)
+            {
+                AdministratorContacts =
+                {
+                    new AdministratorContact
+                    {
+                        Email = "email@domain.tld",
+                        FirstName ="fName",
+                        LastName = "lName",
+                        Phone = "1234"
+                    },
+                },
+            };
 
             RegisterForCleanupIssuer(issuerName);
 

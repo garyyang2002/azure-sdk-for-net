@@ -2,11 +2,9 @@
 // Licensed under the MIT License.
 
 using System;
-using System.Collections.Generic;
 using System.Net;
 using System.Threading.Tasks;
 using Azure.DigitalTwins.Core;
-using Azure.DigitalTwins.Core.Models;
 using Azure.DigitalTwins.Core.Samples;
 using static Azure.DigitalTwins.Core.Samples.SampleLogger;
 using static Azure.DigitalTwins.Core.Samples.UniqueIdHelper;
@@ -26,15 +24,15 @@ namespace Azure.DigitalTwins.Samples
             // For the purpose of this example we will create temporary models using random model Ids and then decommission a model.
             // We have to make sure these model Ids are unique within the DT instance.
 
-            string newComponentModelId = await GetUniqueModelIdAsync(SamplesConstants.TemporaryComponentModelPrefix, client);
+            string componentModelId = await GetUniqueModelIdAsync(SamplesConstants.TemporaryComponentModelPrefix, client);
             string sampleModelId = await GetUniqueModelIdAsync(SamplesConstants.TemporaryModelPrefix, client);
 
             string newComponentModelPayload = SamplesConstants.TemporaryComponentModelPayload
-                .Replace(SamplesConstants.ComponentId, newComponentModelId);
+                .Replace(SamplesConstants.ComponentId, componentModelId);
 
             string newModelPayload = SamplesConstants.TemporaryModelWithComponentPayload
                 .Replace(SamplesConstants.ModelId, sampleModelId)
-                .Replace(SamplesConstants.ComponentId, newComponentModelId);
+                .Replace(SamplesConstants.ComponentId, componentModelId);
 
             // Then we create the model
 
@@ -42,8 +40,8 @@ namespace Azure.DigitalTwins.Samples
             {
                 #region Snippet:DigitalTwinsSampleCreateModels
 
-                Response<IReadOnlyList<ModelData>> response = await client.CreateModelsAsync(new[] { newComponentModelPayload, newModelPayload });
-                Console.WriteLine($"Successfully created a model with Id: {newComponentModelId}, {sampleModelId}, status: {response.GetRawResponse().Status}");
+                await client.CreateModelsAsync(new[] { newComponentModelPayload, newModelPayload });
+                Console.WriteLine($"Created models '{componentModelId}' and '{sampleModelId}'.");
 
                 #endregion Snippet:DigitalTwinsSampleCreateModels
             }
@@ -61,11 +59,10 @@ namespace Azure.DigitalTwins.Samples
             {
                 #region Snippet:DigitalTwinsSampleGetModel
 
-                Response<ModelData> sampleModel = await client.GetModelAsync(sampleModelId);
+                Response<DigitalTwinsModelData> sampleModelResponse = await client.GetModelAsync(sampleModelId);
+                Console.WriteLine($"Retrieved model '{sampleModelResponse.Value.Id}'.");
 
                 #endregion Snippet:DigitalTwinsSampleGetModel
-
-                Console.WriteLine($"{sampleModel.Value.Id} has decommission status of {sampleModel.Value.Decommissioned}");
             }
             catch (Exception ex)
             {
@@ -79,12 +76,11 @@ namespace Azure.DigitalTwins.Samples
             try
             {
                 await client.DecommissionModelAsync(sampleModelId);
-
-                Console.WriteLine($"Successfully decommissioned model {sampleModelId}");
+                Console.WriteLine($"Decommissioned model '{sampleModelId}'.");
             }
-            catch (Exception ex)
+            catch (RequestFailedException ex)
             {
-                FatalError($"Failed to decommision model {sampleModelId} due to:\n{ex}");
+                FatalError($"Failed to decommision model '{sampleModelId}' due to:\n{ex}");
             }
 
             #endregion Snippet:DigitalTwinsSampleDecommisionModel
@@ -96,15 +92,34 @@ namespace Azure.DigitalTwins.Samples
             try
             {
                 await client.DeleteModelAsync(sampleModelId);
-
-                Console.WriteLine($"Deleted model {sampleModelId}");
+                Console.WriteLine($"Deleted model '{sampleModelId}'.");
             }
             catch (Exception ex)
             {
-                FatalError($"Failed to delete model {sampleModelId} due to:\n{ex}");
+                FatalError($"Failed to delete model '{sampleModelId}' due to:\n{ex}");
             }
 
             #endregion Snippet:DigitalTwinsSampleDeleteModel
+        }
+
+        /// <summary>
+        /// Try to delete a model, but don't fail if the model does not exist. Useful in setting up or tearing down after running a sample if the
+        /// sample re-uses the same model Id each time
+        /// </summary>
+        /// <param name="client">The client to use when deleting the model</param>
+        /// <param name="modelId">The id of the model to delete</param>
+        /// <returns>An empty task once the model has been deleted.</returns>
+        public static async Task TryDeleteModelAsync(DigitalTwinsClient client, string modelId)
+        {
+            try
+            {
+                Console.WriteLine($"Deleting model Id '{modelId}' if it exists.");
+                await client.DeleteModelAsync(modelId);
+            }
+            catch (RequestFailedException ex) when (ex.Status == 404)
+            {
+                // Model did not exist yet, and that's fine
+            }
         }
     }
 }

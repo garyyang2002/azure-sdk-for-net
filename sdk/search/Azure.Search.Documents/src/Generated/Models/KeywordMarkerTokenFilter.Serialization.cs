@@ -6,7 +6,6 @@
 #nullable disable
 
 using System.Collections.Generic;
-using System.Linq;
 using System.Text.Json;
 using Azure.Core;
 
@@ -17,17 +16,14 @@ namespace Azure.Search.Documents.Indexes.Models
         void IUtf8JsonSerializable.Write(Utf8JsonWriter writer)
         {
             writer.WriteStartObject();
-            if (Keywords != null && Keywords.Any())
+            writer.WritePropertyName("keywords");
+            writer.WriteStartArray();
+            foreach (var item in Keywords)
             {
-                writer.WritePropertyName("keywords");
-                writer.WriteStartArray();
-                foreach (var item in Keywords)
-                {
-                    writer.WriteStringValue(item);
-                }
-                writer.WriteEndArray();
+                writer.WriteStringValue(item);
             }
-            if (IgnoreCase != null)
+            writer.WriteEndArray();
+            if (Optional.IsDefined(IgnoreCase))
             {
                 writer.WritePropertyName("ignoreCase");
                 writer.WriteBooleanValue(IgnoreCase.Value);
@@ -42,28 +38,17 @@ namespace Azure.Search.Documents.Indexes.Models
         internal static KeywordMarkerTokenFilter DeserializeKeywordMarkerTokenFilter(JsonElement element)
         {
             IList<string> keywords = default;
-            bool? ignoreCase = default;
+            Optional<bool> ignoreCase = default;
             string odataType = default;
             string name = default;
             foreach (var property in element.EnumerateObject())
             {
                 if (property.NameEquals("keywords"))
                 {
-                    if (property.Value.ValueKind == JsonValueKind.Null)
-                    {
-                        continue;
-                    }
                     List<string> array = new List<string>();
                     foreach (var item in property.Value.EnumerateArray())
                     {
-                        if (item.ValueKind == JsonValueKind.Null)
-                        {
-                            array.Add(null);
-                        }
-                        else
-                        {
-                            array.Add(item.GetString());
-                        }
+                        array.Add(item.GetString());
                     }
                     keywords = array;
                     continue;
@@ -72,6 +57,7 @@ namespace Azure.Search.Documents.Indexes.Models
                 {
                     if (property.Value.ValueKind == JsonValueKind.Null)
                     {
+                        property.ThrowNonNullablePropertyIsNull();
                         continue;
                     }
                     ignoreCase = property.Value.GetBoolean();
@@ -88,7 +74,7 @@ namespace Azure.Search.Documents.Indexes.Models
                     continue;
                 }
             }
-            return new KeywordMarkerTokenFilter(odataType, name, keywords, ignoreCase);
+            return new KeywordMarkerTokenFilter(odataType, name, keywords, Optional.ToNullable(ignoreCase));
         }
     }
 }
